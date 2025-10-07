@@ -1,0 +1,308 @@
+import tkinter as tk
+from tkinter import messagebox, simpledialog, ttk
+import json
+from datetime import datetime
+import os
+
+class TodoItem:
+    def __init__(self, task, priority="Medium", due_date=None):
+        self.task = task
+        self.priority = priority
+        self.due_date = due_date
+        self.completed = False
+        self.created_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    def to_dict(self):
+        return {
+            'task': self.task,
+            'priority': self.priority,
+            'due_date': self.due_date,
+            'completed': self.completed,
+            'created_date': self.created_date
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        item = cls(data['task'], data['priority'], data['due_date'])
+        item.completed = data['completed']
+        item.created_date = data['created_date']
+        return item
+
+class TodoApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title(" Todo List")
+        self.root.geometry("600x600")
+        
+        self.todos = []
+        self.data_file = "todos.json"
+        
+        self.setup_ui()
+        self.load_todos()
+        
+    def setup_ui(self):
+        # Title
+        title = tk.Label(self.root, text=" Todo List", font=("Arial", 20, "bold"))
+        title.pack(pady=10)
+        
+        # Control Frame
+        control_frame = tk.Frame(self.root)
+        control_frame.pack(pady=5, fill=tk.X, padx=10)
+        
+        # Add Task Button
+        add_btn = tk.Button(control_frame, text="Add Task", command=self.add_task, bg="#4CAF50", fg="white")
+        add_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Mark Complete Button
+        complete_btn = tk.Button(control_frame, text="Mark Complete", command=self.toggle_complete, bg="#2196F3", fg="white")
+        complete_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Delete Button
+        delete_btn = tk.Button(control_frame, text="Delete", command=self.delete_task, bg="#f44336", fg="white")
+        delete_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Save Button
+        save_btn = tk.Button(control_frame, text="Save", command=self.save_todos, bg="#FF9800", fg="white")
+        save_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Search Frame
+        search_frame = tk.Frame(self.root)
+        search_frame.pack(pady=5, fill=tk.X, padx=10)
+        
+        tk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+        self.search_var = tk.StringVar()
+        self.search_var.trace('w', self.filter_todos)
+        search_entry = tk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        # Filter Frame
+        filter_frame = tk.Frame(self.root)
+        filter_frame.pack(pady=5, fill=tk.X, padx=10)
+        
+        tk.Label(filter_frame, text="Filter:").pack(side=tk.LEFT)
+        self.filter_var = tk.StringVar(value="All")
+        filter_combo = ttk.Combobox(filter_frame, textvariable=self.filter_var, 
+                                   values=["All", "Active", "Completed", "High Priority", "Medium Priority", "Low Priority"],
+                                   state="readonly", width=15)
+        filter_combo.pack(side=tk.LEFT, padx=5)
+        filter_combo.bind('<<ComboboxSelected>>', lambda e: self.filter_todos())
+        
+        # Treeview for tasks
+        columns = ('Status', 'Task', 'Priority', 'Due Date', 'Created')
+        self.tree = ttk.Treeview(self.root, columns=columns, show='tree headings', height=15)
+        
+        # Define headings
+        self.tree.heading('#0', text='ID')
+        self.tree.heading('Status', text='Status')
+        self.tree.heading('Task', text='Task')
+        self.tree.heading('Priority', text='Priority')
+        self.tree.heading('Due Date', text='Due Date')
+        self.tree.heading('Created', text='Created')
+        
+        # Define column widths
+        self.tree.column('#0', width=30)
+        self.tree.column('Status', width=80)
+        self.tree.column('Task', width=200)
+        self.tree.column('Priority', width=80)
+        self.tree.column('Due Date', width=100)
+        self.tree.column('Created', width=120)
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.tree.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Status bar
+        self.status_bar = tk.Label(self.root, text="Ready", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+    def add_task(self):
+        dialog = AddTaskDialog(self.root)
+        if dialog.result:
+            todo = TodoItem(dialog.result['task'], dialog.result['priority'], dialog.result['due_date'])
+            self.todos.append(todo)
+            self.refresh_display()
+            self.update_status()
+            self.save_todos()
+    
+    def toggle_complete(self):
+        selected = self.tree.selection()
+        if selected:
+            item_id = selected[0]
+            index = self.tree.index(item_id)
+            self.todos[index].completed = not self.todos[index].completed
+            self.refresh_display()
+            self.save_todos()
+    
+    def delete_task(self):
+        selected = self.tree.selection()
+        if selected:
+            if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this task?"):
+                item_id = selected[0]
+                index = self.tree.index(item_id)
+                del self.todos[index]
+                self.refresh_display()
+                self.update_status()
+                self.save_todos()
+    
+    def refresh_display(self):
+        self.tree.delete(*self.tree.get_children())
+        filtered_todos = self.get_filtered_todos()
+        
+        for i, todo in enumerate(filtered_todos, 1):
+            status = "✓" if todo.completed else "○"
+            priority_color = {
+                "High": "red",
+                "Medium": "orange",
+                "Low": "green"
+            }
+            
+            values = (
+                status,
+                todo.task,
+                todo.priority,
+                todo.due_date or "No due date",
+                todo.created_date
+            )
+            
+            item_id = self.tree.insert('', 'end', text=str(i), values=values)
+            
+            # Color coding based on priority
+            if todo.priority == "High":
+                self.tree.item(item_id, tags=('high',))
+            elif todo.priority == "Medium":
+                self.tree.item(item_id, tags=('medium',))
+            else:
+                self.tree.item(item_id, tags=('low',))
+                
+            if todo.completed:
+                self.tree.item(item_id, tags=('completed',))
+        
+        # Configure tags
+        self.tree.tag_configure('high', foreground='red')
+        self.tree.tag_configure('medium', foreground='orange')
+        self.tree.tag_configure('low', foreground='green')
+        self.tree.tag_configure('completed', foreground='gray', font=('Arial', 10, 'overstrike'))
+    
+    def get_filtered_todos(self):
+        search_term = self.search_var.get().lower()
+        filter_type = self.filter_var.get()
+        
+        filtered = self.todos
+        
+        # Search filter
+        if search_term:
+            filtered = [todo for todo in filtered if search_term in todo.task.lower()]
+        
+        # Status filter
+        if filter_type == "Active":
+            filtered = [todo for todo in filtered if not todo.completed]
+        elif filter_type == "Completed":
+            filtered = [todo for todo in filtered if todo.completed]
+        elif filter_type in ["High Priority", "Medium Priority", "Low Priority"]:
+            priority_map = {
+                "High Priority": "High",
+                "Medium Priority": "Medium", 
+                "Low Priority": "Low"
+            }
+            filtered = [todo for todo in filtered if todo.priority == priority_map[filter_type]]
+        
+        return filtered
+    
+    def filter_todos(self, *args):
+        self.refresh_display()
+    
+    def update_status(self):
+        total = len(self.todos)
+        completed = len([t for t in self.todos if t.completed])
+        active = total - completed
+        self.status_bar.config(text=f"Total: {total} | Active: {active} | Completed: {completed}")
+    
+    def save_todos(self):
+        try:
+            with open(self.data_file, 'w') as f:
+                json.dump([todo.to_dict() for todo in self.todos], f, indent=2)
+            self.update_status()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save todos: {str(e)}")
+    
+    def load_todos(self):
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                    self.todos = [TodoItem.from_dict(item) for item in data]
+                self.refresh_display()
+                self.update_status()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load todos: {str(e)}")
+
+class AddTaskDialog:
+    def __init__(self, parent):
+        self.result = None
+        
+        dialog = tk.Toplevel(parent)
+        dialog.title("Add New Task")
+        dialog.geometry("300x250")
+        dialog.transient(parent)
+        dialog.grab_set()
+        
+        # Task
+        tk.Label(dialog, text="Task:").pack(pady=5)
+        self.task_entry = tk.Entry(dialog, width=40)
+        self.task_entry.pack(pady=5)
+        
+        # Priority
+        tk.Label(dialog, text="Priority:").pack(pady=5)
+        self.priority_var = tk.StringVar(value="Medium")
+        priority_combo = ttk.Combobox(dialog, textvariable=self.priority_var, 
+                                     values=["High", "Medium", "Low"], state="readonly")
+        priority_combo.pack(pady=5)
+        
+        # Due Date
+        tk.Label(dialog, text="Due Date (YYYY-MM-DD):").pack(pady=5)
+        self.due_date_entry = tk.Entry(dialog, width=40)
+        self.due_date_entry.pack(pady=5)
+        
+        # Buttons
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(pady=20)
+        
+        tk.Button(button_frame, text="Add", command=lambda: self.on_ok(dialog)).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        
+        # Focus
+        self.task_entry.focus()
+        dialog.wait_window()
+    
+    def on_ok(self, dialog):
+        task = self.task_entry.get().strip()
+        if not task:
+            messagebox.showwarning("Warning", "Please enter a task!")
+            return
+        
+        due_date = self.due_date_entry.get().strip()
+        if due_date and not self.validate_date(due_date):
+            messagebox.showwarning("Warning", "Please enter a valid date (YYYY-MM-DD)!")
+            return
+        
+        self.result = {
+            'task': task,
+            'priority': self.priority_var.get(),
+            'due_date': due_date if due_date else None
+        }
+        dialog.destroy()
+    
+    def validate_date(self, date_str):
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = TodoApp(root)
+    root.mainloop()
